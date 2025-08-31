@@ -52,13 +52,6 @@ void load_and_run_elf(char** exe) {
       exit(1);
     }
 
-    // Magic Number check (Check for ELF File)
-    if (ehdr->e_ident[0] != 0x7f || ehdr->e_ident[1] != 0x45 ||
-        ehdr->e_ident[2] != 0x4c || ehdr->e_ident[3] != 0x46) {
-        fprintf(stderr, "Not an ELF file!\n");
-        loader_cleanup();
-        exit(1);
-    }
 
     // Virual address of the entry point
     unsigned int entry_virtual_add = ehdr->e_entry;
@@ -129,17 +122,4 @@ void load_and_run_elf(char** exe) {
     // 6. Call the "_start" method and print the value returned from the "_start"
     int result = _start();
     printf("User _start return value = %d\n",result);
-}
-
-int main(int argc, char **argv){
-
-    if(argc != 2) {
-        printf("Usage: %s <ELF Executable> \n",argv[0]);
-        exit(1);
-    }
-
-    load_and_run_elf(argv);
-    loader_cleanup();
-
-    return 0;
 }
