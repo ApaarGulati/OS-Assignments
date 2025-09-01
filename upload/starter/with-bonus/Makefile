@@ -3,6 +3,7 @@
 all: bin/lib_simpleloader.so bin/launch test/fib
 	./bin/launch ./test/fib
 
+# -C is used to change into the directory, and then run the Makefile of that directory
 bin/lib_simpleloader.so:
 	make -C loader
 	mv loader/lib_simpleloader.so bin/

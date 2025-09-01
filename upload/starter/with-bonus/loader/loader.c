@@ -1,12 +1,12 @@
 #include "loader.h"
 
-Elf32_Ehdr *ehdr;            // Pointer for ELF header
-Elf32_Phdr *phdr;            // Pointer for program header
-int fd;                      // File descriptor
+Elf32_Ehdr *ehdr = NULL;            // Pointer for ELF header
+Elf32_Phdr *phdr = NULL;            // Pointer for program header
+int fd = -1;                        // File descriptor
 
-Elf32_Phdr *ph;              // Pointer for segment that contains entry point
-void *segment_virtual_mem;   // Pointer to that segment in process memory
-unsigned int segment_size;   // Size of the loaded segment in process memory
+Elf32_Phdr *ph = NULL;              // Pointer for segment that contains entry point
+void *segment_virtual_mem = NULL;   // Pointer to that segment in process memory
+unsigned int segment_size = 0;      // Size of the loaded segment in process memory
 
 /*
  * release memory and other cleanups
@@ -20,7 +20,7 @@ void loader_cleanup() {
     ph = NULL;
     
     // Unmapping mapped memory and freeing
-    if (segment_virtual_mem) {
+    if (segment_virtual_mem && segment_size > 0) {
         munmap(segment_virtual_mem, segment_size);
         segment_virtual_mem = NULL;
     }
@@ -46,6 +46,7 @@ void load_and_run_elf(char** exe) {
         loader_cleanup();
         exit(1);
     }
+    // Reading the entire ELF header into memory
     if (read(fd, ehdr, sizeof(Elf32_Ehdr)) != sizeof(Elf32_Ehdr)) {
       perror("ehdr is faulty");
       loader_cleanup();
@@ -69,6 +70,7 @@ void load_and_run_elf(char** exe) {
         loader_cleanup();
         exit(1);
     }
+    // Reading the entire Program header table into memory
     if (read(fd, phdr, sizeof(Elf32_Phdr) * ehdr->e_phnum) != sizeof(Elf32_Phdr) * ehdr->e_phnum) {
         perror("phdr is faulty");
         loader_cleanup();
@@ -79,10 +81,12 @@ void load_and_run_elf(char** exe) {
     // 2. Iterate through the PHDR table and find the section of PT_LOAD 
     //    type that contains the address of the entrypoint method in fib.c
     for (int i=0; i<ehdr->e_phnum; i++) {
+        // Checking only for PT_LOAD segments
         if (phdr[i].p_type == PT_LOAD) {
             unsigned int start_add = phdr[i].p_vaddr;
             unsigned int end_add = start_add + phdr[i].p_memsz;
 
+            // Checking whether segment contains entry point address
             if (start_add<=entry_virtual_add && entry_virtual_add<end_add) {
                 ph = &phdr[i];
                 break;
@@ -101,11 +105,13 @@ void load_and_run_elf(char** exe) {
         exit(1);
     }
     
+    // Offsetting to segment that contains entry point
     if (lseek(fd, ph->p_offset, SEEK_SET) < 0) {
         perror("lseek to program header failed");
         loader_cleanup();
         exit(1);
     }
+    // Reading the entire segment that contains entry point into mapped memory
     if (read(fd, segment_virtual_mem, segment_size) != segment_size) {
         perror("PT_LOAD segment is faulty");
         loader_cleanup();
@@ -115,6 +121,7 @@ void load_and_run_elf(char** exe) {
     // 4. Navigate to the entrypoint address into the segment loaded in the memory in above step
     unsigned int entry_offset = entry_virtual_add - ph->p_vaddr;
     unsigned int entry_address = (unsigned int)segment_virtual_mem + entry_offset;
+    // Offset for entry point into the segment (in memory) is same as the offset for entry point in the mapped segment
     
     // 5. Typecast the address to that of function pointer matching "_start" method in fib.c.
     int (*_start)() = (int(*)()) (entry_address);
