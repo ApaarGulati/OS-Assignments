@@ -5,9 +5,10 @@
 #include <string.h>
 #include <signal.h>
 
-#define MAX_INPUT 1024
-#define MAX_ARGS 64
-#define MAX_CMDS 16
+#define MAX_INPUT 1024     // Maximum length of input line
+#define MAX_ARGS 64        // Maximum number of arguments for a command
+#define MAX_CMDS 16        // Maximum commands separated by pipes
+
 
 // Parse command into argv[], handling quotes
 int parse_args(char *cmd, char **argv) {
@@ -34,17 +35,24 @@ int parse_args(char *cmd, char **argv) {
 }
 
 int main() {
-    char *line = NULL;
-    size_t len = 0;
-    char cwd[1024];
+    char *line = NULL;    // User Input Line
+    size_t len = 0;       // Buffer size for getline
+    char cwd[1024];       // Buffer to store current working directory
 
+    // Shell User/Device Info
     const char *user = "User";
     const char *device = "MyPC";
 
+
+    // Ignore Ctrl+C and Ctrl+Z signals in the simpleshell (parent process) itself
     signal(SIGINT, SIG_IGN);
     signal(SIGTSTP, SIG_IGN);
 
+    // Main Shell Loop
     while (1) {
+
+        // PROMPTING FOR USER INPUT
+        // get current working directory
         if (getcwd(cwd, sizeof(cwd)) != NULL) {
             printf("%s@%s:%s$ ", user, device, cwd);
         } else {
@@ -53,7 +61,15 @@ int main() {
         }
         fflush(stdout);
 
-        if (getline(&line, &len, stdin) == -1) break;
+         // Reading a line from user input (stdin)
+        if (getline(&line, &len, stdin) == -1) {
+            break;   // Ctrl+D (EOF)
+        }
+
+
+
+        // PARSING USER INPUT
+        // remove trailing newline from user input
         line[strcspn(line, "\n")] = '\0';
         if (strlen(line) == 0) continue;
 
