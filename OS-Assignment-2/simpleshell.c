@@ -8,6 +8,7 @@
 #define MAX_INPUT 1024   // Maximum length of input line
 #define MAX_PATH 1024    // Maximum length of path for getcwd
 #define MAX_ARGS 64      // Maximum number of arguments for a command
+#define MAX_CMDS 10      // Maximum commands in a pipeline
 
 int main() {
     char *line = NULL;     // User Input Line
@@ -40,12 +41,13 @@ int main() {
         if (getline(&line, &len, stdin) == -1) {
             break; // EOF (Ctrl+D)
         }
-
-
-
+        
+        
+        
         // PARSING USER INPUT
         // remove trailing newline from user input
         line[strcspn(line, "\n")] = '\0';
+        if (strlen(line) == 0) continue;
 
         // Parsing
         char *argv[MAX_ARGS];
