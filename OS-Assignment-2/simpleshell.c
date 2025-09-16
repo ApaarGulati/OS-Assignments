@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <time.h>
 
+// Shell variables
 #define MAX_INPUT 1024        // Maximum length of input line
 #define MAX_ARGS 64           // Maximum number of arguments for a single command
 #define MAX_CMDS 64           // Maximum number of commands separated by pipes
@@ -23,24 +24,54 @@ typedef struct {
 HistoryEntry history[MAX_HISTORY];   // Array storing history of each command
 int history_count = 0;        // Number of commands in history
 
+void cleanup(char* line) {
+    // Free the line buffer allocated by getline
+    free(line);
+
+    // Free history
+    for (int i = 0; i < history_count; i++) {
+        free(history[i].cmd);
+    }
+}
+
 // Parse command into argv[] (space separated)
-void parser(char *cmd, char **argv) {
+void parser_space(char *cmd, char **argv) {
     int argc = 0;
     char *token = strtok(cmd, " \t");
     while (token != NULL && argc < MAX_ARGS - 1) {
         argv[argc++] = token;
-        token = strtok(NULL, " \t");
+        token = strtok(NULL, " \t");     // NULL -> Continue where it left from previously
     }
-    argv[argc] = NULL;
+    argv[argc] = NULL;   // Terminating command with NULL
+}
+
+// Parse line into argv[] (pipe separated)
+void parser_pipe(char *cmd, char **argv, int* num_cmds) {
+    char *token = strtok(cmd, "|");
+    while (token != NULL && (*num_cmds) < MAX_CMDS) {
+        while (*token == ' ') token++;  // trim leading spaces
+        argv[(*num_cmds)++] = token;       
+        token = strtok(NULL, "|");    // NULL -> Continue where it left from previously
+    }
+
 }
 
 // Handling signals
 void handle_signal(int sig) {
     if (sig == SIGINT) {       // Ctrl+C
-        printf("\nError: Ctrl+C is not supported. Use exit/quit to terminate the shell.\n");
-    } else if (sig == SIGTSTP) { // Ctrl+Z
-        printf("\nError: Ctrl+Z is not supported. Use exit/quit to terminate the shell.\n");
-    }
+        // Print entire history and then exit
+        printf("\nExiting SimpleShell...\n");
+        printf("Command Execution Summary:\n");
+        for (int i = 0; i < history_count; i++) {
+            // Calculating time with nanosecond precision (defined in <time.h>)
+            double duration = (history[i].end_time.tv_sec - history[i].start_time.tv_sec) +
+                            (history[i].end_time.tv_nsec - history[i].start_time.tv_nsec)/1e9;
+            printf("PID: %d | Duration: %.6f sec | Command: %s\n", history[i].pid, duration, history[i].cmd);
+        }
+        
+        cleanup(NULL);
+        exit(0);
+    } 
 }
 
 // Store info of each command in history
@@ -66,6 +97,12 @@ void store_history(const char *cmd, pid_t pid, struct timespec start, struct tim
     }
 }
 
+void update_history(pid_t pid, struct timespec start, struct timespec end) {
+    history[history_count-1].pid = pid;
+    history[history_count-1].start_time = start;
+    history[history_count-1].end_time = end;
+}
+
 int main() {
     char *line = NULL;    // User Input Line
     size_t len = 0;       // Buffer size for getline
@@ -75,10 +112,8 @@ int main() {
     const char *user = "User";
     const char *device = "MyPC";
 
-
-    // Handling Ctrl+C and Ctrl+Z signals 
+    // Handling Ctrl+C
     signal(SIGINT, handle_signal);
-    signal(SIGTSTP, handle_signal);
 
     // Main Shell Loop
     while (1) {
@@ -92,20 +127,18 @@ int main() {
             printf("?$ ");
         }
         fflush(stdout);
-
+        
         // Reading a line from user input (stdin)
         if (getline(&line, &len, stdin) == -1) {
-            break;   // Ctrl+D (EOF)
+            break;   // EOF Error
         }
 
 
 
         // PARSING USER INPUT
-        // remove trailing newline from user input
-        line[strcspn(line, "\n")] = '\0';
-
-        // Skipping empty line
-        if (strlen(line) == 0) continue;
+        
+        line[strcspn(line, "\n")] = '\0';   // remove trailing newline from user input
+        if (strlen(line) == 0) continue;    // Skipping empty line
 
         // Reject quotes/backslashes
         if (strchr(line, '\"') || strchr(line, '\'') || strchr(line, '\\')) {
@@ -117,71 +150,32 @@ int main() {
         struct timespec start_time, end_time;
         clock_gettime(CLOCK_REALTIME, &start_time);  // record time before executing command
         
-
         // Store in history
         store_history(line, 0, start_time, start_time);
-        
 
         // Handle history command
         if (strcmp(line, "history") == 0) {
+            // Printing history
             for (int i = 0; i < history_count; i++) {
                 printf("%d: %s\n", i + 1, history[i].cmd);
             }
-            clock_gettime(CLOCK_REALTIME, &end_time); // record time after command finishes
-            
+
+            clock_gettime(CLOCK_REALTIME, &end_time);  // record time after command finishes
             // Updating command info in history
-            history[history_count-1].pid = getpid();
-            history[history_count-1].start_time = start_time;
-            history[history_count-1].end_time = end_time;
-            
+            update_history(getpid(), start_time, end_time);
+
             continue;  // Skip remaining execution
         }
-
-        // Handle exit/quit
-        if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
-            clock_gettime(CLOCK_REALTIME, &end_time); // record time after command finishes
-
-            // Updating command info in history
-            history[history_count-1].pid = getpid();
-            history[history_count-1].start_time = start_time;
-            history[history_count-1].end_time = end_time;
-
-            // Exiting shell and printing entire process history
-            printf("Exiting SimpleShell...\n");
-            printf("Command Execution Summary:\n");
-            for (int i = 0; i < history_count; i++) {
-                // Calculating time with nanosecond precision (defined in <time.h>)
-                double duration = (history[i].end_time.tv_sec - history[i].start_time.tv_sec) +
-                                  (history[i].end_time.tv_nsec - history[i].start_time.tv_nsec)/1e9;
-                printf("PID: %d | Duration: %.6f sec | Command: %s\n", history[i].pid, duration, history[i].cmd);
-            }
-
-            // Free the line buffer allocated by getline
-            free(line);
-
-            // Free history
-            for (int i = 0; i < history_count; i++) {
-                free(history[i].cmd);
-            }
-
-            exit(0);
-        }
-        
-
-
 
         // Split commands by pipes
         char *cmds[MAX_CMDS];
         int num_cmds = 0;
-        char *token = strtok(line, "|");
-        while (token != NULL && num_cmds < MAX_CMDS) {
-            while (*token == ' ') token++;  // trim leading spaces
-            cmds[num_cmds++] = token;
-            token = strtok(NULL, "|");        // NULL -> Continue where it left from previously
-        }
+        parser_pipe(line, cmds, &num_cmds);
 
+
+
+        // SETTING UP PIPES
         int pipefd[MAX_CMDS-1][2]; // support n-1 pipes for n commands
-
         // Create pipes
         for (int i = 0; i < num_cmds-1; i++) {
             if (pipe(pipefd[i]) < 0) {
@@ -190,11 +184,13 @@ int main() {
             }
         }
 
+
+        // PROCESS EXECUTION
         // Looping over all the commands one by one (creating a child process for each)
-        pid_t last_pid = 0;
+        pid_t last_pid = 0;    // Only storing the pid of the last command in a piped command chain
         for (int i = 0; i < num_cmds; i++) {
-            char *argv[MAX_ARGS];          // array to store parsed command
-            parser(cmds[i], argv);         // parsing the command (space separated)
+            char *argv[MAX_ARGS];             // array to store parsed command
+            parser_space(cmds[i], argv);      // parsing the command (space separated)
             
             // Creating new process
             pid_t pid = fork();
@@ -244,19 +240,12 @@ int main() {
 
         // record time after command finishes
         clock_gettime(CLOCK_REALTIME, &end_time);
-
         // Updating final info in history
-        history[history_count-1].pid = last_pid;
-        history[history_count-1].start_time = start_time;
-        history[history_count-1].end_time = end_time;
+        update_history(last_pid, start_time, end_time);
+
     }
 
-    // Free the line buffer allocated by getline
-    free(line);
-
-    // Free history
-    for (int i = 0; i < history_count; i++) {
-        free(history[i].cmd);
-    }
+    // Cleanup on exit
+    cleanup(line);
     return 0;
 }
