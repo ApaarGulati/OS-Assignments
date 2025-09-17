@@ -24,6 +24,10 @@ typedef struct {
 HistoryEntry history[MAX_HISTORY];   // Array storing history of each command
 int history_count = 0;        // Number of commands in history
 
+// Array to store original user input lines for `history` command
+char *original_lines[MAX_HISTORY];
+int orig_count = 0;
+
 void cleanup(char* line) {
     // Free the line buffer allocated by getline
     free(line);
@@ -31,6 +35,10 @@ void cleanup(char* line) {
     // Free history
     for (int i = 0; i < history_count; i++) {
         free(history[i].cmd);
+    }
+
+    for (int i = 0; i < orig_count; i++) {
+        free(original_lines[i]);
     }
 }
 
@@ -74,58 +82,26 @@ void handle_signal(int sig) {
     } 
 }
 
-// Store info of each command in history
-void store_history(const char *cmd, pid_t pid, struct timespec start, struct timespec end) {
-    if (history_count < MAX_HISTORY) {
-        history[history_count].cmd = strdup(cmd);
-        history[history_count].pid = pid;
-        history[history_count].start_time = start;
-        history[history_count].end_time = end;
 
-        history_count++;
-    } else {
-        // Shifting all the elements 
-        free(history[0].cmd);
-        for (int i = 1; i < MAX_HISTORY; i++) {
-            history[i-1] = history[i];
-        }
-
-        history[MAX_HISTORY-1].cmd = strdup(cmd);
-        history[MAX_HISTORY-1].pid = pid;
-        history[MAX_HISTORY-1].start_time = start;
-        history[MAX_HISTORY-1].end_time = end;
-    }
-}
-
-void update_history(pid_t pid, struct timespec start, struct timespec end) {
-    history[history_count-1].pid = pid;
-    history[history_count-1].start_time = start;
-    history[history_count-1].end_time = end;
-}
 
 int main() {
     char *line = NULL;    // User Input Line
     size_t len = 0;       // Buffer size for getline
-    char cwd[1024];       // Buffer to store current working directory (to print as a prompt)
-
-    // Shell User/Device Info
-    const char *user = "User";
-    const char *device = "MyPC";
 
     // Handling Ctrl+C
-    signal(SIGINT, handle_signal);
+    struct sigaction sig;
+    memset(&sig, 0, sizeof(sig));
+    sig.sa_handler = handle_signal;
+    if (sigaction(SIGINT, &sig, NULL) == -1) {
+        perror("sigaction");
+        exit(1);
+    }
 
     // Main Shell Loop
     while (1) {
 
         // PROMPTING FOR USER INPUT
-        // get current working directory
-        if (getcwd(cwd, sizeof(cwd)) != NULL) {
-            printf("%s@%s:%s$ ", user, device, cwd);
-        } else {
-            perror("getcwd");
-            printf("?$ ");
-        }
+        printf("SimpleShell> ");
         fflush(stdout);
         
         // Reading a line from user input (stdin)
@@ -134,9 +110,7 @@ int main() {
         }
 
 
-
         // PARSING USER INPUT
-        
         line[strcspn(line, "\n")] = '\0';   // remove trailing newline from user input
         if (strlen(line) == 0) continue;    // Skipping empty line
 
@@ -149,28 +123,59 @@ int main() {
         // struct defined in <time.h>
         struct timespec start_time, end_time;
         clock_gettime(CLOCK_REALTIME, &start_time);  // record time before executing command
+
         
-        // Store in history
-        store_history(line, 0, start_time, start_time);
-
-        // Handle history command
-        if (strcmp(line, "history") == 0) {
-            // Printing history
-            for (int i = 0; i < history_count; i++) {
-                printf("%d: %s\n", i + 1, history[i].cmd);
+        // Store the original line for history command
+        if (orig_count < MAX_HISTORY) {
+            original_lines[orig_count++] = strdup(line);
+        } else {
+            free(original_lines[0]);
+            for (int i = 1; i < MAX_HISTORY; i++) {
+                original_lines[i-1] = original_lines[i];
             }
-
-            clock_gettime(CLOCK_REALTIME, &end_time);  // record time after command finishes
-            // Updating command info in history
-            update_history(getpid(), start_time, end_time);
-
-            continue;  // Skip remaining execution
+            original_lines[MAX_HISTORY-1] = strdup(line);
         }
 
         // Split commands by pipes
         char *cmds[MAX_CMDS];
         int num_cmds = 0;
         parser_pipe(line, cmds, &num_cmds);
+
+        // Store each piped command separately for termination summary
+        for (int i = 0; i < num_cmds; i++) {
+            if (history_count < MAX_HISTORY) {
+                history[history_count].cmd = strdup(cmds[i]);
+                history[history_count].pid = 0;
+                history[history_count].start_time = start_time;
+                history[history_count].end_time = start_time;
+                history_count++;
+            } else {
+                // Shift history if full
+                free(history[0].cmd);
+                for (int j = 1; j < MAX_HISTORY; j++) {
+                    history[j-1] = history[j];
+                }
+                history[MAX_HISTORY-1].cmd = strdup(cmds[i]);
+                history[MAX_HISTORY-1].pid = 0;
+                history[MAX_HISTORY-1].start_time = start_time;
+                history[MAX_HISTORY-1].end_time = start_time;
+            }
+        }
+
+        // Handle history command
+        if (strcmp(line, "history") == 0) {
+            // Printing history
+            for (int i = 0; i < orig_count; i++) {
+                printf("%d: %s\n", i + 1, original_lines[i]);
+            }
+
+            clock_gettime(CLOCK_REALTIME, &end_time);  // record time after command finishes
+            // Updating command info in history
+            history[history_count-1].pid = getpid();
+            history[history_count-1].end_time = end_time;
+
+            continue;  // Skip remaining execution
+        }
 
 
 
@@ -187,7 +192,6 @@ int main() {
 
         // PROCESS EXECUTION
         // Looping over all the commands one by one (creating a child process for each)
-        pid_t last_pid = 0;    // Only storing the pid of the last command in a piped command chain
         for (int i = 0; i < num_cmds; i++) {
             char *argv[MAX_ARGS];             // array to store parsed command
             parser_space(cmds[i], argv);      // parsing the command (space separated)
@@ -220,11 +224,12 @@ int main() {
                 }
             } else {
                 // PARENT PROCESS
-                // Storing pid of each process down the pipeline (eventually storing the last one)
-                last_pid = pid;
+                // Storing child info in history
+                int hist_idx = history_count - num_cmds + i;
+                history[hist_idx].pid = pid;
+                history[hist_idx].start_time = start_time;
 
             }
-
         }
 
         // Parent closes all pipes (They will still be present in the children)
@@ -235,13 +240,12 @@ int main() {
 
         // Wait for all children to complete
         for (int i = 0; i < num_cmds; i++) {
-            wait(NULL);
+            int status;
+            wait(&status);
+            clock_gettime(CLOCK_REALTIME, &end_time);
+            int hist_idx = history_count - num_cmds + i;
+            history[hist_idx].end_time = end_time;
         }
-
-        // record time after command finishes
-        clock_gettime(CLOCK_REALTIME, &end_time);
-        // Updating final info in history
-        update_history(last_pid, start_time, end_time);
 
     }
 
