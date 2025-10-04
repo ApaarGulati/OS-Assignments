@@ -198,7 +198,10 @@ int main() {
             
             // Creating new process
             pid_t pid = fork();
-            if (pid == 0) {
+            if(pid < 0) {
+                perror("Cannot Fork");
+                exit(1);
+            } else if (pid == 0) {
                 // CHILD PROCESS
                 // If not first command, read from previous pipe
                 if (i > 0) {
