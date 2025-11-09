@@ -79,8 +79,10 @@ void* page_align(void* addr) {
 size_t min(size_t a, size_t b) {
     return (a < b) ? a : b;
 }
+size_t max(size_t a, size_t b) {
+    return (a > b) ? a : b;
+}
 
-// Segments are already page alligned in an ELF so two different segments cannot be in one page
 // [ file data ][ BSS (zeros) ][ unused memory ]
 // file data -> bytes that actually exist in file (tocopy)
 // BSS -> Bytes that belong to the segment in memory but are not in the file (need to be zeroed)
@@ -96,8 +98,7 @@ void segfault_handler(int sig, siginfo_t *si, void *unused) {
     // Find Virtual Address of Page start
     void* page_start = page_align(fault_addr);
 
-    // Already mapped page (meaning this is an actual segmentation fault, and NOT a page fault)
-    // Escalate to default handling
+    // Already mapped page (actual segfault)
     if (is_page_mapped(page_start)) {
         struct sigaction sa_def;
         memset(&sa_def,0,sizeof(sa_def));
@@ -107,76 +108,89 @@ void segfault_handler(int sig, siginfo_t *si, void *unused) {
         return;
     }
 
-    // Determine which PT_LOAD segment contains the faulting page
-    Elf32_Phdr *seg = NULL;
-    for (int i = 0; i < ehdr->e_phnum; i++) {
-        if (phdr[i].p_type == PT_LOAD) {
-            uintptr_t seg_start = phdr[i].p_vaddr;
-            uintptr_t seg_end   = seg_start + phdr[i].p_memsz;
-
-            if ((uintptr_t)page_start >= seg_start && (uintptr_t)page_start < seg_end) {
-                seg = &phdr[i];
-                break;
-            }
-        }
-    }
-
-    if (!seg) {
-        printf("Segfault at address outside any PT_LOAD segment!\n");
-        exit(1);
-    }
-    
-    // Map required page as RW first (permissions are fixed later)
+    // Map required page as RW first (permissions fixed later)
     void* mapped = mmap(page_start, page_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE|MAP_FIXED, -1, 0);
     if (mapped == MAP_FAILED) {
         perror("mmap failed");
         exit(1);
     }
-    mark_page_mapped(page_start);  // Mark page as mapped
-    total_page_allocations++;      // Count allocation
+    mark_page_mapped(page_start);
+    total_page_allocations++;  
 
+    // Track which bytes in the page have been used
+    size_t used_in_page = 0;
 
-    // Compute offset of this page within the segment
-    uintptr_t page_offset_in_segment = (uintptr_t)page_start - seg->p_vaddr;
+    // Iterate over all segments
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type != PT_LOAD) continue;
 
-    // Number of bytes to copy from file
-    size_t to_copy = 0;
-    if (page_offset_in_segment < seg->p_filesz) {
-        to_copy = min(seg->p_filesz - page_offset_in_segment, page_size);
-    }
+        // Segment start and end in memory
+        uintptr_t seg_start = phdr[i].p_vaddr;
+        uintptr_t seg_end   = seg_start + phdr[i].p_memsz;
 
-    // Number of bytes to zero (BSS / uninitialized)
-    size_t to_zero = 0;
-    if (page_offset_in_segment + to_copy < seg->p_memsz) {
-        to_zero = min(seg->p_memsz - (page_offset_in_segment + to_copy), page_size - to_copy);
-    }
+        // Skip segments that do not overlap this page
+        if ((uintptr_t)page_start >= seg_end || (uintptr_t)page_start + page_size <= seg_start)
+            continue;
 
-    // Internal fragmentation
-    size_t fragmentation = page_size - (to_copy + to_zero);
-    internal_fragmentation += fragmentation;
+        // Compute page boundaries
+        uintptr_t page_start_addr = (uintptr_t)page_start;
+        uintptr_t page_end_addr   = page_start_addr + page_size;
+        uintptr_t seg_file_end    = seg_start + phdr[i].p_filesz;
+        uintptr_t seg_mem_end     = seg_end;
 
-    // Copy file-backed bytes
-    if (to_copy > 0) {
-        ssize_t n = pread(fd, page_start, to_copy, seg->p_offset + page_offset_in_segment);
-        if (n != (ssize_t)to_copy) {
-            perror("Failed to read page from file");
-            exit(1);
+        // File-backed portion 
+        uintptr_t file_start = max(page_start_addr, seg_start);
+        uintptr_t file_end   = min(page_end_addr, seg_file_end);
+        size_t file_bytes = 0;
+        // Overlap found
+        if (file_end > file_start) {
+            file_bytes = file_end - file_start;
+            off_t file_offset = phdr[i].p_offset + (file_start - seg_start);
+            ssize_t n = pread(fd, (void*)file_start, file_bytes, file_offset);
+            if (n != (ssize_t)file_bytes) {
+                perror("Failed to read file-backed bytes");
+                exit(1);
+            }
         }
+
+        // Uninitialized portion 
+        uintptr_t bss_start = max(page_start_addr, seg_file_end);
+        uintptr_t bss_end   = min(page_end_addr, seg_mem_end);
+        size_t bss_bytes = 0;
+        // Overlap found
+        if (bss_end > bss_start) {
+            bss_bytes = bss_end - bss_start;
+            memset((void*)bss_start, 0, bss_bytes);
+        }
+
+        // Count used bytes in this page
+        used_in_page += file_bytes + bss_bytes;
     }
 
-    // Zero out BSS/uninitialized bytes
-    if (to_zero > 0) {
-        memset((char*)page_start + to_copy, 0, to_zero);
+    // Remaining unused bytes in page contribute to internal fragmentation
+    if (used_in_page < page_size) {
+        internal_fragmentation += page_size - used_in_page;
     }
 
-
-    // Set final permissions
+    // Set final permissions for all overlapping segments
+    // Conservative approach: combine permissions
     int prot = 0;
-    if (seg->p_flags & PF_R) prot |= PROT_READ;
-    if (seg->p_flags & PF_W) prot |= PROT_WRITE;
-    if (seg->p_flags & PF_X) prot |= PROT_EXEC;
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type != PT_LOAD) continue;
+
+        uintptr_t seg_start = phdr[i].p_vaddr;
+        uintptr_t seg_end   = seg_start + phdr[i].p_memsz;
+
+        if ((uintptr_t)page_start >= seg_end || (uintptr_t)page_start + page_size <= seg_start)
+            continue;
+
+        if (phdr[i].p_flags & PF_R) prot |= PROT_READ;
+        if (phdr[i].p_flags & PF_W) prot |= PROT_WRITE;
+        if (phdr[i].p_flags & PF_X) prot |= PROT_EXEC;
+    }
     mprotect(page_start, page_size, prot);
 }
+
 
 /*
  * Load and run the ELF executable file
