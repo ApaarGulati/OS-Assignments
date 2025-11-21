@@ -1,4 +1,4 @@
-# OS Assignment - 3
+# OS Assignment - 4
 ## Simple Smart Loader 
 
 This is a **simple smart loader**, which is an upgrade to the **simple loader (Assignment 1)** as it supports **Dynamic Page Loading**, i.e., pages are **lazily loaded** as needed. Whenever a memory access is required, we first check if the required page is available in memory. If it is not available, it raises a **segmentation fault**, which will be handled as a **page fault**. We handle the page fault by performing necessary **permission checks** and then successfully **loading the required page into memory**. After this, control is returned back to the program.
